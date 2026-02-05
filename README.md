@@ -1,4 +1,9 @@
 # SSPSPredictor
-code for a structure and sequence-based PSPs predictor
-python=3.8
-torch=1.8.1
+
+This repository contains code and pre-trained weights for **SSPSPredictor**
+a **s**equence and **s**tructure-based PSPs predictor
+
+```bash
+pip install fair-esm  # latest release, OR:
+pip install git+https://github.com/facebookresearch/esm.git  # bleeding edge, current repo main branch
+```
