@@ -1,39 +1,46 @@
-
-
-from torch_geometric.data import Data
-
-from Bio import PDB
 import os
-
+from Bio import PDB
 from Bio.PDB import PDBParser
-
 from Bio.PDB import PPBuilder
 
 import json
-
-import torch.utils.data as data
-
 import numpy as np
 import tqdm, random
 import math
-import torch.nn.functional as F
+
 import torch_geometric
 import torch_cluster
-
-
+from torch_geometric.data import Data
+import torch.utils.data as data
+import torch.nn.functional as F
 import torch, functools
 from torch import nn
 
 from torch_geometric.nn import MessagePassing
 from torch_scatter import scatter_add
 
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from transformers import EsmModel, EsmTokenizer
 
+def get_coo(pdb_path):
+    parser = PDB.PDBParser()
+    structure = parser.get_structure('protein', pdb_path)
 
+    # 定义主链原子
+    main_chain_atoms = ['N', 'CA', 'C', 'O']
+
+    # 提取主链原子坐标
+    main_chain_coords = []
+
+    for model in structure:
+        for chain in model:
+            for residue in chain:
+                coo = []
+                for atom in residue:
+                    if atom.get_name() in main_chain_atoms:
+                        coord = atom.get_coord()
+                        coo.append(coord)
+                main_chain_coords.append(coo)
+    return main_chain_coords
 
 
 class ProteinGraphDataset(data.Dataset):
@@ -182,8 +189,6 @@ class ProteinGraphDataset(data.Dataset):
         vec = -bisector * math.sqrt(1 / 3) - perp * math.sqrt(2 / 3)
         return vec 
 
-# In[3]:
-
 
 def _normalize(tensor, dim=-1):
     '''
@@ -193,6 +198,45 @@ def _normalize(tensor, dim=-1):
         torch.div(tensor, torch.norm(tensor, dim=dim, keepdim=True)))
 
 
+class Protein_new(ProteinGraphDataset):
+    def __init__(self, data_list, 
+                     num_positional_embeddings=16,
+                     top_k=30, num_rbf=16, device="cpu"):
+            super(Protein_new, self).__init__(data_list, num_positional_embeddings, top_k, num_rbf, device)
+    def _featurize_as_graph(self, protein):
+        name = protein['name']
+        with torch.no_grad():
+
+            coords = torch.as_tensor(protein['coords'], 
+                                     device=self.device, dtype=torch.float32)   
+            seq = protein['seq']
+            mask = torch.isfinite(coords.sum(dim=(1,2)))
+            coords[~mask] = np.inf
+            X_ca = coords[:, 1]
+            edge_index = torch_cluster.knn_graph(X_ca, k=self.top_k)
+            
+            pos_embeddings = self._positional_embeddings(edge_index)
+            E_vectors = X_ca[edge_index[0]] - X_ca[edge_index[1]]
+            rbf = _rbf(E_vectors.norm(dim=-1), D_count=self.num_rbf, device=self.device)
+            
+            dihedrals = self._dihedrals(coords)                     
+            orientations = self._orientations(X_ca)
+            sidechains = self._sidechains(coords)
+            
+            node_s = dihedrals
+            node_v = torch.cat([orientations, sidechains.unsqueeze(-2)], dim=-2)
+            edge_s = torch.cat([rbf, pos_embeddings], dim=-1)
+            edge_v = _normalize(E_vectors).unsqueeze(-2)
+            
+            node_s, node_v, edge_s, edge_v = map(torch.nan_to_num,
+                    (node_s, node_v, edge_s, edge_v))
+        data = torch_geometric.data.Data(x=X_ca, seq=seq, name=name,
+                                         node_s=node_s, node_v=node_v,
+                                         edge_s=edge_s, edge_v=edge_v,
+                                         edge_index=edge_index, mask=mask,
+                                        )
+        return data
+      
 def _rbf(D, D_min=0., D_max=20., D_count=16, device='cpu'):
     '''
     From https://github.com/jingraham/neurips19-graph-protein-design
