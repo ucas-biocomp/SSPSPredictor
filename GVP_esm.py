@@ -25,10 +25,8 @@ def get_coo(pdb_path):
     parser = PDB.PDBParser()
     structure = parser.get_structure('protein', pdb_path)
 
-    # 定义主链原子
     main_chain_atoms = ['N', 'CA', 'C', 'O']
 
-    # 提取主链原子坐标
     main_chain_coords = []
 
     for model in structure:
@@ -637,7 +635,6 @@ class SelfAttentiveEncoder(nn.Module):
         self.tanh = nn.Tanh()
         self.softmax = nn.Softmax()
         self.agg = nn.Linear(head*1280, 1280, bias=False)
-#        self.init_weights()
 
     def init_weights(self, init_range=0.1):
         self.ws1.weight.data.uniform_(-init_range, init_range)
@@ -647,9 +644,7 @@ class SelfAttentiveEncoder(nn.Module):
         
         inp = inp.unsqueeze(0)
         size = inp.size()  # [bsz, len, nhid]
-#         print(size)
-        
-        
+
         compressed_embeddings = inp.view(-1, 1280)  # [bsz*len, nhid*2]
 
         slice_a = inp[:, :, 0]#[bsz,len]
@@ -667,13 +662,12 @@ class SelfAttentiveEncoder(nn.Module):
         alphas = alphas.view(size[0], self.head, size[1])
         out = torch.bmm(alphas, inp)
         out = self.agg(out.view(1, -1))
-#         return torch.bmm(alphas, inp), alphas
         return out,alphas
 
 
 
 
-class MQAModel_attn(nn.Module):
+class GVPGNN(nn.Module):
     '''
     GVP-GNN for Model Quality Assessment as described in manuscript.
     
@@ -700,7 +694,7 @@ class MQAModel_attn(nn.Module):
     def __init__(self, node_in_dim, node_h_dim, 
                  edge_in_dim, edge_h_dim,drop_rate,num_layers,emb_red,):
         
-        super(MQAModel_attn, self).__init__()
+        super(GVPGNN, self).__init__()
 
         # drop_rate = trial.suggest_float("dropout_rate", 0, 0.3,step=0.1)
         # num_layers = trial.suggest_int("num_layers", 1, 5,step = 1)
@@ -771,97 +765,9 @@ class MQAModel_attn(nn.Module):
         
         return self.dense(out).squeeze(-1), attn
 
-class MQAModel(nn.Module):
-    '''
-    GVP-GNN for Model Quality Assessment as described in manuscript.
-    
-    Takes in protein structure graphs of type `torch_geometric.data.Data` 
-    or `torch_geometric.data.Batch` and returns a scalar score for
-    each graph in the batch in a `torch.Tensor` of shape [n_nodes]
-    
-    Should be used with `gvp.data.ProteinGraphDataset`, or with generators
-    of `torch_geometric.data.Batch` objects with the same attributes.
-    
-    :param node_in_dim: node dimensions in input graph, should be
-                        (6, 3) if using original features
-    :param node_h_dim: node dimensions to use in GVP-GNN layers
-    :param node_in_dim: edge dimensions in input graph, should be
-                        (32, 1) if using original features
-    :param edge_h_dim: edge dimensions to embed to before use
-                       in GVP-GNN layers
-    :seq_in: if `True`, sequences will also be passed in with
-             the forward pass; otherwise, sequence information
-             is assumed to be part of input node embeddings
-    :param num_layers: number of GVP-GNN layers
-    :param drop_rate: rate to use in all dropout layers
-    '''
-    def __init__(self, node_in_dim, node_h_dim, 
-                 edge_in_dim, edge_h_dim,
-                 drop_rate, num_layers, emb_red):
-        
-        super(MQAModel, self).__init__()
-
-
-        node_in_dim = (node_in_dim[0] + emb_red, node_in_dim[1])
-        
-        self.re = nn.Linear(1280, emb_red)
-        self.W_v = nn.Sequential(
-            LayerNorm(node_in_dim),
-            GVP(node_in_dim, node_h_dim, activations=(None, None))
-        )
-        self.W_e = nn.Sequential(
-            LayerNorm(edge_in_dim),
-            GVP(edge_in_dim, edge_h_dim, activations=(None, None))
-        )
-        
-        self.layers = nn.ModuleList(
-                GVPConvLayer(node_h_dim, edge_h_dim, drop_rate=drop_rate) 
-            for _ in range(num_layers))
-        
-        ns, _ = node_h_dim
-        self.W_out = nn.Sequential(
-            LayerNorm(node_h_dim),
-            GVP(node_h_dim, (ns, 0)))
-            
-        self.dense = nn.Sequential(
-            nn.Linear(ns, 2*ns), nn.ReLU(inplace=True),
-            nn.Dropout(p=drop_rate),
-            nn.Linear(2*ns, 1)
-        )
-
-    def forward(self, h_V, edge_index, h_E, embedding,seq=None, batch=None):      
-        '''
-        :param h_V: tuple (s, V) of node embeddings
-        :param edge_index: `torch.Tensor` of shape [2, num_edges]
-        :param h_E: tuple (s, V) of edge embeddings
-        :param seq: if not `None`, int `torch.Tensor` of shape [num_nodes]
-                    to be embedded and appended to `h_V`
-        '''
-        if embedding is not None:
-            
-            embedding = self.re(embedding)
-#             seq = self.W_s(seq)
-            
-#             print(f"h_V[0]:{h_V[0].shape}")
-#             print(f"seq:{seq.shape}")
-            h_V = (torch.cat([h_V[0], embedding], dim=-1), h_V[1])
-            
-            # print("load embedding")
-        h_V = self.W_v(h_V)
-        h_E = self.W_e(h_E)
-        for layer in self.layers:
-            h_V = layer(h_V, edge_index, h_E)
-        out = self.W_out(h_V)
-        
-        if batch is None: out = out.mean(dim=0, keepdims=True)
-        else: out = scatter_mean(out, batch, dim=0)
-        
-        return self.dense(out).squeeze(-1)
-
-
 
         
-class GVP_ESM3(nn.Module):
+class GVP_ESM2(nn.Module):
     def __init__(self, esm_model_name, original_model_weights_path,device,drop_rate,num_layers,emb_red) -> None:
         super().__init__()
         
@@ -876,7 +782,7 @@ class GVP_ESM3(nn.Module):
         # num_layers = 3
         # emb_red = 128
         # Initialize the original model components
-        model =  MQAModel_attn((6, 3), node_dim, (32, 1), edge_dim,drop_rate = drop_rate, num_layers = num_layers, emb_red = emb_red, )
+        model = GVPGNN((6, 3), node_dim, (32, 1), edge_dim,drop_rate = drop_rate, num_layers = num_layers, emb_red = emb_red, )
         model.load_state_dict(torch.load(original_model_weights_path))
         self.gvp_esm =  model.to(self.device)
         # Load the original model weights
